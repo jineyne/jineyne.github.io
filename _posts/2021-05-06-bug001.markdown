@@ -47,7 +47,7 @@ void terminate(bool force) {
 }
 {% endhighlight %}
 
-# 참조
+# 참고
 
 ## ```exit()``` 와 ```std::terminate()``` 혹은 ```abort()``` (이하 ```abort()```)와의 차이점
 ```exit()```은 함수가 기본적으로 프로그램이 정상적으로 종료되었음을 확인하고 프로그램이 종료시킨다. 즉 런타임에서 종료를 처리한다.
