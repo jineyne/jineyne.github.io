@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "FreeType 그리고 memory"
+title: "003.FreeType 그리고 memory"
 date: 2021-06-07T14:19:18Z
 categories: ["Another Bug"]
 ---
