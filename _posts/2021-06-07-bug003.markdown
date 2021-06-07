@@ -1,0 +1,88 @@
+---
+layout: post
+title: "FreeType 그리고 memory"
+date: 2021-06-07T14:19:18Z
+categories: ["Another Bug"]
+---
+
+# 서문
+때는 프레임워크에서 릴리즈를 위해 패킹 파일에서 파일을 추출하려고 기존에 파일 시스템을 전부 갈아엎고 Physfs 라이브러리를 통해 패킹 파일에서 파일을 읽어올 수 있도록 수정하던 때였다.
+
+각종 리소스 파일들을 직접 파일을 열도록 하는 것보다 직접 만든 파일 시스템을 통해서 패킹된 리소스를 메모리에 올리고 올라온 메모리를 각종 라이브러리에 보내 처리하도록 변경했다.
+
+이미지나 쉐이더는 예전부터 읽고 메모리를 통해 전달했기 때문에 큰 변경 없이 작동했지만, 문제는 폰트였다.
+
+
+# 문제
+이미지는 FreeType을 통해 파일 이름을 전달해서 라이브러리에서 직접 파일을 읽었다. 그리고 이번에 변경하면서 ```FT_New_Memory_Face()``` 함수를 통해 파일을 읽게 변경했다.
+
+{% highlight cpp %}
+auto file = tiny::FileSystem::OpenFile(path);
+Vector<uint8_t> fileData(file->size());
+file->read(fileData.data(), file->size());
+
+FT_Face face;
+if (FT_New_Memory_Face(mLibrary, fileData.data(), fileData.size(), 0, &face)) {
+    LOG(Error, Importer) << _T("Font 파일을 읽을 수 없습니다: ") << path.toString();
+    return nullptr;
+}
+{% endhighlight %}
+
+문제는 읽을 때는 오류 없이 잘 돌아갔지만 렌더링 될 때 글씨가 나오지 않았다.
+
+# 고민
+처음에는 라이브러리 내에 읽는 방식에 특별함이 있는 줄 알았다. 그래서 소스를 읽어봤는데 좀 복잡하게 꼬여있었을 뿐 그냥 평범하게 파일을 읽어 들였다. 
+
+그리고 아무 생각이 없어졌다. 
+
+의심되는 지점도 해결 방법도 생각이 나지 않았다.
+
+그래서 폰트랑 글리프를 초기화하는 과정을 따라갔다. 그리고 마침내 ```FT_Get_Char_Index``` 함수에서 폰트 데이터를 읽지 못하는 것을 알게 되었다. 이 함수는 내부 ```tt_cmap4_char_map_binary``` 함수에서 유니코드 데이터를 읽어오는데 이 유니코드 데이터가 null로 설정되어 있었다.
+
+다시 한번 폰트랑 글리프를 초기화하는 과정을 따라갔다. 하지만 이 유니코드 데이터는 폰트가 초기화될 때 설정이 되는 것을 확인했고 그 이후 초기화 과정에서 해당 데이터가 해제되지 않았다.
+
+# 해결
+결국 무지성으로 f11만 누르면서 계속 언제 데이터가 해제되는지 따라가 본 결과 파일을 읽어온 로컬 데이터가 해제될 때 해당 유니코드 데이터도 같이 해제되는 것을 확인했다.
+
+나는 당연하게 해당 정보가 폰트나 글리프 안에 옮겨질 것이라고 생각하고 의심조차 하지 않았지만 FreeType 라이브러리는 그냥 포인터만 가지고 있던 것이다.
+
+결국 폰트 클래스에서 해당 폰트 파일 정보를 가지고 있는 것으로 해결했다.
+
+{% highlight cpp %}
+class FTFont : public Font {
+private:
+    ...
+
+    uint8_t *mSource;
+
+    ...
+
+    void setSource(uint8_t *source);
+
+    ...
+};
+{% endhighlight %}
+
+{% highlight cpp %}
+auto file = tiny::FileSystem::OpenFile(path);
+auto *source = Allocator::Alloc(file->size());
+file->read(source, file->size());
+
+FT_Face face;
+if (FT_New_Memory_Face(mLibrary, source, file->size(), 0, &face)) {
+    LOG(Error, Importer) << _T("Font 파일을 읽을 수 없습니다: ") << path.toString();
+    return nullptr;
+}
+
+auto font = MakeShared<FTFont>(face);
+
+...
+
+font->setSource(source);
+{% endhighlight %}
+
+# 여담
+
+생각해보면 이미지도 쉐이더도 내가 내부적으로 읽은 데이터를 저장하게 했으면서 왜 폰트만 라이브러리가 저장해준다고 생각했는지 모르겠다.
+
+가끔 무지성으로 프로그램 진행을 따라가 보는 것도 나쁘지 않은 것 같다. 문제는 메모리도 전부 봐야 하는 것이지만
